@@ -1,141 +1,117 @@
 
 #!/usr/bin/env bash
-# macOS rename check script
-# Saves nothing, only prints checks. Run in your normal shell.
+# macOS rename verification script
+# Checks whether the short name, home folder, and account record are consistent.
+
 set -euo pipefail
 
-echo
-echo "==== macOS rename verification script ===="
+echo "==== macOS Rename Verification ===="
 printf "\n"
 
-# 1) Whoami / id
-me="$(whoami 2>/dev/null || echo UNKNOWN)"
-me_id="$(id -u 2>/dev/null || echo UNKNOWN)"
+# 1) Current login / UNIX short name
+current_user="$(whoami 2>/dev/null || echo UNKNOWN)"
+uid="$(id -u 2>/dev/null || echo UNKNOWN)"
 echo "1) Current login / UNIX short name:"
-echo "   whoami:   $me"
-echo "   uid:      $me_id"
+echo "   whoami: $current_user"
+echo "   uid: $uid"
 printf "\n"
 
-# 2) $HOME and existence
-home_env="${HOME:-UNKNOWN}"
-echo "2) HOME environment and folder:"
-echo "   \$HOME:   $home_env"
-if [ -d "$home_env" ]; then
-  echo "   Folder:   exists"
+# 2) Home environment and folder
+home_dir="${HOME:-UNKNOWN}"
+echo "2) Home directory:"
+echo "   \$HOME: $home_dir"
+if [ -d "$home_dir" ]; then
+  echo "   Folder: exists"
+  ls_output="$(ls -ld "$home_dir" 2>/dev/null || true)"
+  echo "   ls -ld: $ls_output"
 else
-  echo "   Folder:   DOES NOT EXIST"
-fi
-ls_output="$(ls -ld "$home_env" 2>/dev/null || true)"
-if [ -n "$ls_output" ]; then
-  echo "   ls -ld:   $ls_output"
+  echo "   Folder: DOES NOT EXIST"
 fi
 printf "\n"
 
-# 3) Owner of home folder (stat)
-echo "3) Owner reported by filesystem (stat):"
+# 3) Owner reported by filesystem
+echo "3) File system ownership:"
 if command -v stat >/dev/null 2>&1; then
-  # macOS stat -f format
-  fs_owner="$(stat -f '%Su' "$home_env" 2>/dev/null || echo UNKNOWN)"
-  fs_group="$(stat -f '%Sg' "$home_env" 2>/dev/null || echo UNKNOWN)"
-  echo "   owner:    $fs_owner"
-  echo "   group:    $fs_group"
+  fs_owner="$(stat -f '%Su' "$home_dir" 2>/dev/null || echo UNKNOWN)"
+  fs_group="$(stat -f '%Sg' "$home_dir" 2>/dev/null || echo UNKNOWN)"
+  echo "   Owner: $fs_owner"
+  echo "   Group: $fs_group"
 else
-  echo "   stat not found"
+  echo "   stat command not available"
 fi
 printf "\n"
 
-# 4) What dscl says about the current user
-echo "4) Directory service (dscl) record for the current user:"
+# 4) Directory service (dscl) record for current user
+echo "4) Directory Service record:"
 if command -v dscl >/dev/null 2>&1; then
-  # try reading typical fields
-  dscl_out="$(dscl . -read "/Users/$me" NFSHomeDirectory RecordName UniqueID RealName 2>/dev/null || true)"
+  dscl_out="$(dscl . -read "/Users/$current_user" NFSHomeDirectory RecordName UniqueID RealName 2>/dev/null || true)"
   if [ -n "$dscl_out" ]; then
     echo "$dscl_out" | sed 's/^/   /'
   else
-    echo "   No dscl record read for /Users/$me (it may not exist or dscl failed)."
+    echo "   No dscl record found for /Users/$current_user"
   fi
 else
   echo "   dscl command not available"
 fi
 printf "\n"
 
-# 5) Which user record points to this home directory?
-echo "5) Which user(s) have NFSHomeDirectory = \$HOME?"
+# 5) Check which user(s) have NFSHomeDirectory = $HOME
+echo "5) Users with NFSHomeDirectory = \$HOME:"
 if command -v dscl >/dev/null 2>&1; then
-  # list users with their NFSHomeDirectory and grep for current $HOME
   dscl_list="$(dscl . -list /Users NFSHomeDirectory 2>/dev/null || true)"
   if [ -n "$dscl_list" ]; then
-    echo "$dscl_list" | awk -v home="$home_env" '$2==home { print "   matched:", $1, "->", $2 }'
-    # Also show any partial matches
-    echo
-    echo "   (All local users and their home paths — helpful for inspection)"
-    echo "$dscl_list" | sed 's/^/   /'
+    echo "$dscl_list" | awk -v home="$home_dir" '$2==home { print "   matched:", $1, "->", $2 }'
   else
-    echo "   could not list users / NFSHomeDirectory (permission or dscl issue)"
+    echo "   Could not list users and home directories"
   fi
 else
-  echo "   dscl not available"
+  echo "   dscl command not available"
 fi
 printf "\n"
 
-# 6) Quick summary of checks and suggested actions
-echo "==== Summary checks ===="
+# 6) Summary
+echo "==== Summary ===="
 ok=true
 
-# check1: whoami exists
-if [ "$me" = "UNKNOWN" ] || [ -z "$me" ]; then
-  echo " - FAIL: could not determine current username (whoami)"
+if [ "$current_user" = "UNKNOWN" ] || [ -z "$current_user" ]; then
+  echo " - FAIL: Could not determine current username"
   ok=false
 else
-  echo " - OK: logged-in short name: $me"
+  echo " - OK: Current username is $current_user"
 fi
 
-# check2: home exists
-if [ ! -d "$home_env" ]; then
-  echo " - FAIL: home folder $home_env does not exist."
+if [ ! -d "$home_dir" ]; then
+  echo " - FAIL: Home folder $home_dir does not exist"
   ok=false
 else
-  echo " - OK: home folder exists."
+  echo " - OK: Home folder exists"
 fi
 
-# check3: owner matches username
-if [ -n "${fs_owner:-}" ] && [ "$fs_owner" != "UNKNOWN" ]; then
-  if [ "$fs_owner" != "$me" ]; then
-    echo " - WARNING: home folder owner is '$fs_owner' but current user is '$me'."
-    ok=false
-    suggest_chown="sudo chown -R ${me}:staff \"${home_env}\""
-    echo "   Suggested fix (run after confirming):"
-    echo "     $suggest_chown"
-    echo "   (This will change ownership of everything under the home folder to the current user.)"
-  else
-    echo " - OK: home folder owner matches username."
-  fi
+if [ "$fs_owner" != "$current_user" ]; then
+  echo " - WARNING: Home folder owner is '$fs_owner', expected '$current_user'"
+  echo "   Suggested fix: sudo chown -R ${current_user}:staff \"$home_dir\""
+  ok=false
 else
-  echo " - NOTE: could not determine filesystem owner reliably."
+  echo " - OK: Home folder owner matches username"
 fi
 
-# check4: dscl home path matches $HOME
 dscl_home="$(echo "$dscl_out" | awk '/NFSHomeDirectory:/{print $2}' || true)"
 if [ -n "$dscl_home" ]; then
-  if [ "$dscl_home" = "$home_env" ]; then
-    echo " - OK: dscl NFSHomeDirectory for '$me' matches \$HOME."
+  if [ "$dscl_home" = "$home_dir" ]; then
+    echo " - OK: dscl NFSHomeDirectory matches $HOME"
   else
-    echo " - WARNING: dscl NFSHomeDirectory for '$me' is '$dscl_home' (does not match \$HOME = '$home_env')."
-    echo "   This means the account record may still point to the old home path."
-    echo "   To change it (advanced): use System Settings → Users & Groups → Advanced Options OR use dscl carefully."
+    echo " - WARNING: dscl NFSHomeDirectory is '$dscl_home', expected '$home_dir'"
     ok=false
   fi
 else
-  echo " - NOTE: could not read dscl NFSHomeDirectory for user '$me'. (Run 'dscl . -read /Users/$me' manually with admin privileges to inspect.)"
+  echo " - NOTE: Could not read dscl NFSHomeDirectory"
 fi
 
 printf "\n"
 if [ "$ok" = true ]; then
-  echo "✅ Looks good: the common rename checks passed."
+  echo "All checks passed. The account rename appears complete."
 else
-  echo "⚠️ Some checks flagged issues above. Read suggested fixes and proceed carefully."
+  echo "Some checks flagged issues. Review the warnings above before making changes."
 fi
 
-echo
-echo "If you want me to provide the exact chown or dscl commands tailored to your username, tell me the username you expect and I'll produce them."
-echo "==== end ===="
+echo "==== End ===="
